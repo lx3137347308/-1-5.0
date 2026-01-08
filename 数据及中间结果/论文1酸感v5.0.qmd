@@ -182,67 +182,88 @@ View(robust_report)
 
 ```{r}
 # ==========================================================
-# Phase 2: 描述性统计 (Descriptive Statistics) - 修正版
+# Phase 2: 描述性统计 (Descriptive Statistics) - 中英文混合旗舰版
 # ==========================================================
 
-# 1. 安全检查：确保数据已加载
-if (!exists("analysis_data")) stop("错误：analysis_data 不存在，请先运行 Phase 1！")
+# 1. 确保数据已加载
+if (!exists("analysis_data")) stop("请先运行 Phase 1 加载数据！")
 
-# 2. 【关键修正】自动定义 chemical_vars
-# 逻辑：从所有列名中，排除掉 "Sample_ID", "Sourness_Score", "Group" 等非化学指标
-# 这样不管你前面有没有定义，这里都会重新抓取一遍，保证不报错
-non_chem_cols <- c("Sample_ID", "SampleID", "Sourness_Score", "Group", "样品编号", "酸感得分")
-chemical_vars <- setdiff(colnames(analysis_data), non_chem_cols)
+# 加载计算偏度峰度的包 (如果没有会自动使用替补函数)
+if (!requireNamespace("e1071", quietly = TRUE)) {
+  skewness <- function(x) { n <- length(x); (sum((x-mean(x))^3)/n)/(sum((x-mean(x))^2)/n)^1.5 }
+  kurtosis <- function(x) { n <- length(x); n*sum((x-mean(x))^4)/(sum((x-mean(x))^2)^2)-3 }
+} else { library(e1071) }
 
-# 检查一下抓到了多少个
-cat(">>> 识别到化学指标数量:", length(chemical_vars), "个\n")
-
-# 3. 计算基础统计量 (均值、标准差、变异系数)
-raw_stats <- analysis_data %>%
-  group_by(Group) %>%
-  summarise(across(all_of(chemical_vars), 
-                   list(
-                     Mean = ~mean(., na.rm = TRUE), 
-                     SD   = ~sd(., na.rm = TRUE),
-                     CV   = ~ (sd(., na.rm = TRUE) / mean(., na.rm = TRUE)) * 100
-                   ),
-                   .names = "{.col}__{.fn}"))
-
-# 4. 格式化输出 (制作论文表)
-# 这一步需要 mapping_df (或 name_mapping)，我们自动检测一下你用的是哪个
-if (exists("mapping_df")) {
-  use_mapping <- mapping_df
-} else if (exists("name_mapping")) {
-  use_mapping <- name_mapping
-} else {
-  stop("错误：找不到映射表 (mapping_df 或 name_mapping)，请检查 Phase 1。")
+# 2. 定义全能统计函数 (按您要求的顺序排列)
+get_full_summary <- function(x) {
+  # --- 基础指标 (Basic) ---
+  valid_n <- sum(!is.na(x))
+  min_val <- min(x, na.rm = TRUE)
+  max_val <- max(x, na.rm = TRUE)
+  m       <- mean(x, na.rm = TRUE)
+  s       <- sd(x, na.rm = TRUE)
+  
+  # --- 进阶/鲁棒指标 (Advanced/Robust) ---
+  med     <- median(x, na.rm = TRUE)
+  q1      <- quantile(x, 0.25, na.rm = TRUE)
+  q3      <- quantile(x, 0.75, na.rm = TRUE)
+  cv      <- (s / m) * 100
+  
+  # --- 形状指标 (Shape) ---
+  skew    <- skewness(x, na.rm = TRUE)
+  kurt    <- kurtosis(x, na.rm = TRUE)
+  norm_p  <- if(valid_n > 3 && valid_n < 5000) shapiro.test(x)$p.value else NA
+  
+  # --- 整理成一行，列名采用中英文混合 ---
+  data.frame(
+    # 1. 基础信息
+    `样本量 (N)`           = valid_n,
+    `最小值 (Min)`         = sprintf("%.2f", min_val),
+    `最大值 (Max)`         = sprintf("%.2f", max_val),
+    `均值 ± 标准差 (Mean ± SD)` = paste0(sprintf("%.2f", m), " ± ", sprintf("%.2f", s)),
+    
+    # 2. 鲁棒指标 (非正态推荐用这个)
+    # 格式：中位数 (下四分位, 上四分位)
+    `中位数 (Median) (Q1, Q3)` = paste0(sprintf("%.2f", med), " (", sprintf("%.2f", q1), ", ", sprintf("%.2f", q3), ")"),
+    
+    # 3. 变异与形状
+    `变异系数 (CV %)`      = sprintf("%.2f", cv),
+    `偏度 (Skewness)`      = sprintf("%.2f", skew),
+    `峰度 (Kurtosis)`      = sprintf("%.2f", kurt),
+    `正态性 P值 (Shapiro P)` = sprintf("%.3f", norm_p),
+    
+    check.names = FALSE
+  )
 }
 
-desc_stats_paper <- raw_stats %>%
-  pivot_longer(cols = -Group, 
-               names_to = c("Computational_Name", "Stat"), 
-               names_sep = "__") %>%
-  pivot_wider(names_from = Stat, values_from = value) %>%
-  
-  # 生成 Mean ± SD 和 CV
-  mutate(
-    `Mean±SD` = paste0(sprintf("%.2f", Mean), " ± ", sprintf("%.2f", SD)),
-    CV = round(CV, 2)
-  ) %>%
-  
-  select(Group, Computational_Name, `Mean±SD`, CV) %>%
-  
-  pivot_wider(names_from = Group, 
-              values_from = c(`Mean±SD`, CV),
-              names_glue = "{Group}_{.value}") %>%
-  
-  # 关联中文名
-  left_join(use_mapping, by = "Computational_Name") %>%
-  select(Display_Name, everything(), -Computational_Name)
+# 3. 计算“整体 (Total)”
+total_stats <- get_full_summary(analysis_data$Sourness_Score)
+row.names(total_stats) <- "总体 (Total N=57)"
 
-# 5. 保存
-write_csv(desc_stats_paper, "Table1_Descriptive_Statistics_Paper.csv")
+# 4. 计算“各分组 (By Group)”
+group_stats <- analysis_data %>%
+  group_by(Group) %>%
+  summarise(Data = list(Sourness_Score), .groups = "drop") %>%
+  rowwise() %>%
+  mutate(Stats = list(get_full_summary(unlist(Data)))) %>%
+  unnest(Stats) %>%
+  select(-Data)
+
+# 处理行名
+group_stats_df <- as.data.frame(group_stats)
+rownames(group_stats_df) <- group_stats_df$Group
+group_stats_df <- group_stats_df %>% select(-Group)
+
+# 5. 合并并输出
+final_table1 <- rbind(total_stats, group_stats_df)
+final_table1 <- final_table1 %>% tibble::rownames_to_column("分组 (Group)")
+
+# 保存
+write_csv(final_table1, "Table1_Descriptive_Statistics_Mixed.csv")
 
 cat(">>> 描述性统计表 (Table 1) 已生成！\n")
-print(head(desc_stats_paper))
+cat(">>> 列顺序已调整：N -> Min/Max -> Mean -> Median(Robust) -> CV -> Skew/Kurt\n")
+
+# 展示表格
+knitr::kable(final_table1, caption = "表1：酸感得分描述性统计 (Table 1: Descriptive Statistics of Sourness Scores)")
 ```
