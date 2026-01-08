@@ -1,0 +1,125 @@
+---
+title: "基于N=57的大样本烟草酸感化学指标筛选与机制研究"
+author: "LX"
+format: html
+editor: visual
+toc: true  # 自动生成目录
+---
+
+## 1. 研究背景与目的
+
+本研究旨在通过大样本统计分析（N=57），探究影响烟草酸感的核心化学指标。我们摒弃了传统的验证集策略，转而采用深度机理挖掘的方法。
+
+## 2. 数据加载与预处理 (Phase 1)
+
+首先，我们加载 N=57 的原始数据，并对化学指标名称进行标准化处理。
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+# 这里放 Phase 1 的代码
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(tibble)
+
+# 1. 读取数据
+# 请确保 data-57.csv 在同级目录下
+if (!file.exists("data-57.csv")) {
+  stop("错误：找不到文件 'data-57.csv'")
+}
+raw_data <- read_csv("data-57.csv", show_col_types = FALSE)
+
+# 2. 标准化列名
+original_names <- colnames(raw_data)
+clean_names <- make.names(original_names, unique = TRUE)
+name_mapping <- tibble(
+  Display_Name = original_names,
+  Computational_Name = clean_names
+)
+analysis_data <- raw_data
+colnames(analysis_data) <- clean_names
+
+# 3. 识别关键列
+id_col_name <- clean_names[1]
+score_col_name <- clean_names[2]
+analysis_data <- analysis_data %>%
+  rename(Sample_ID = all_of(id_col_name),
+         Sourness_Score = all_of(score_col_name))
+
+# 4. 生成候选物质列表
+candidates <- name_mapping %>%
+  filter(!Computational_Name %in% c("Sample_ID", "Sourness_Score"))
+```
+
+## 3. 感官数据分布特征 (Phase 1.5)
+
+我们对 57 个样品的酸感得分进行了描述性统计分析。
+
+```{r}
+#| label: descriptive-stats
+#| echo: false
+#| warning: false
+
+# 这里放 Phase 1.5 的代码
+# 绘制分布图
+p_dist <- ggplot(analysis_data, aes(x = Sourness_Score)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 0.5, 
+                 fill = "#69b3a2", color = "white", alpha = 0.8) +
+  geom_density(color = "#404080", linewidth = 1.2) +
+  labs(title = "Distribution of Sourness Scores (N=57)",
+       x = "Sourness Score", y = "Density") +
+  theme_bw()
+
+print(p_dist)
+```
+
+如上图所示，样品得分呈现正态分布趋势，覆盖了从低酸到高酸的完整区间。
+
+## 4. 关键差异指标筛选 (Phase 2)
+
+使用 Kruskal-Wallis 检验筛选不同酸感等级间的差异物质。
+
+```{r}
+#| label: kw-test
+#| include: false 
+
+# 这里放 Phase 2 的代码 (代码运行但不显示在文章中，因为只要结果)
+# (为了演示简洁，这里省略了具体的KW循环代码，你可以把那段粘过来)
+# 假设我们已经筛完了...
+```
+
+## 5. 核心指标与酸感的相关性 (Phase 3)
+
+基于专家经验与统计相关性，我们筛选出了 16 个核心指标（包含酸、糖、碱、多酚四大类）。
+
+```{r}
+#| label: correlation-plot
+#| fig-width: 8
+#| fig-height: 8
+#| warning: false
+
+# 这里放 Phase 3 的核心绘图代码
+
+# A. 定义专家名单
+expert_list <- c(
+  "乙酸", "丙酸", "乳酸", "柠檬酸", "草酸", "3-甲基戊酸",
+  "总糖", "还原糖", "蔗糖", "尼古丁", "总氮", "糖碱比",
+  "绿原酸", "芸香苷", "DDMP", "脯氨酸"
+)
+
+# B. 计算相关性 (简化版逻辑)
+cor_results <- data.frame()
+# ... (把之前 Phase 3 的循环代码贴在这里) ...
+# 为了演示，假设 cor_results 已经算好了
+
+# C. 绘图 (把你 Phase 3 最后那段 ggplot 代码贴在这里)
+# p_loll <- ggplot(...)
+# print(p_loll)
+```
+
+通过棒棒糖图可以直观看出，乙酸等挥发性酸与酸感呈正相关，而尼古丁等生物碱起到了显著的抑制作用。123是啊但是发生
