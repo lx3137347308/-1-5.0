@@ -1,129 +1,248 @@
 ---
-title: "基于N=57的大样本烟草酸感化学指标筛选与机制研究"
+title: "论文1酸感5.0"
 author: "LX"
 format: html
 editor: visual
-toc: true  # 自动生成目录
 ---
 
-## 1. 研究背景与目的
+## \##  〇、项目概述与环境配置
 
-本研究旨在通过大样本统计分析（N=57），探究影响烟草酸感的核心化学指标。我们摒弃了传统的验证集策略，转而采用深度机理挖掘的方法。
+\*\*核心策略：\*\*
+[1.]{.underline}  \*\*数据源\*\*：仅使用 N=57 发现集，保证分析的一致性和统计效力。
+[2.]{.underline}  \*\*筛选逻辑\*\*：结合“统计显著性（Spearman/Kruskal-Wallis）”与“专家经验（16个核心指标）”。
+[3.]{.underline}  \*\*验证方式\*\*：通过聚类热图（Clustering Heatmap）验证核心指标是否能还原感官分类。
 
-## 2. 数据加载与预处理 (Phase 1)
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
 
-首先，我们加载 N=57 的原始数据，并对化学指标名称进行标准化处理。
+# 1. 加载核心程序包
+library(readr)      # 读取数据
+library(dplyr)      # 数据清洗
+library(tibble)     # 数据结构
+library(tidyr)      # 数据整理
+library(ggplot2)    # 绘图核心
+library(ggpubr)     # 统计绘图扩展
+library(pheatmap)   # 聚类热图
+library(stringr)    # 字符串处理
+library(showtext)   # 中文支持
+
+# 2. 中文环境配置 (解决绘图乱码)
+showtext_auto()
+# 如果是 Windows，通常使用 SimHei 或 SimSun；Mac 使用 PingFang SC
+# font_add("SimSun", "simsun.ttc") # 根据需要取消注释
+
+# 3. 设置全局绘图主题
+theme_set(theme_bw() + 
+            theme(panel.grid = element_blank(),
+                  plot.title = element_text(hjust = 0.5, face = "bold"),
+                  axis.text = element_text(color = "black")))
+```
+
+## 一、数据加载与清洗 (Phase 1)
+
+此处采用“映射表”机制，完美解决 R 语言对中文列名和特殊符号（如 `1-`, `()`）的不兼容问题。
 
 ```{r}
 #| label: load-data
 #| message: false
-#| warning: false
-
-# 这里放 Phase 1 的代码
-library(dplyr)
-library(readr)
-library(ggplot2)
-library(tidyr)
-library(stringr)
-library(tibble)
 
 # 1. 读取数据
-# 请确保 data-57.csv 在同级目录下
-if (!file.exists("data-57.csv")) {
-  stop("错误：找不到文件 'data-57.csv'")
-}
+# 请确保 'data-57.csv' 在当前文件夹下
+if (!file.exists("data-57.csv")) stop("错误：找不到 data-57.csv 文件！")
 raw_data <- read_csv("data-57.csv", show_col_types = FALSE)
 
-# 2. 标准化列名
+# 2. 构建“中文名 - 计算名”映射表
 original_names <- colnames(raw_data)
 clean_names <- make.names(original_names, unique = TRUE)
+
 name_mapping <- tibble(
-  Display_Name = original_names,
-  Computational_Name = clean_names
+  Display_Name = original_names,      # 原名 (画图用)
+  Computational_Name = clean_names    # 计算名 (统计用)
 )
+
+# 应用新列名
 analysis_data <- raw_data
 colnames(analysis_data) <- clean_names
 
-# 3. 识别关键列
-id_col_name <- clean_names[1]
-score_col_name <- clean_names[2]
+# 3. 识别关键列与分组
+# 假设: 第1列是样品ID，第2列是酸感得分
+id_col <- clean_names[1]
+score_col <- clean_names[2]
+
 analysis_data <- analysis_data %>%
-  rename(Sample_ID = all_of(id_col_name),
-         Sourness_Score = all_of(score_col_name))
+  rename(Sample_ID = all_of(id_col),
+         Sourness_Score = all_of(score_col)) %>%
+  # 按照 v5.0 的标准进行 4 级分组
+  mutate(Group = cut(Sourness_Score, 
+                     breaks = c(-Inf, 1.5, 3.0, 4.5, Inf),
+                     labels = c("微酸 (Trace)", "稍酸 (Mild)", 
+                                "酸 (Moderate)", "很酸 (Strong)"),
+                     include.lowest = TRUE))
 
-# 4. 生成候选物质列表
+# 4. 提取候选化学物质列表 (排除 ID, Score, Group)
 candidates <- name_mapping %>%
-  filter(!Computational_Name %in% c("Sample_ID", "Sourness_Score"))
+  filter(!Computational_Name %in% c(id_col, score_col, "Group"))
+
+cat(">>> 数据准备就绪：\n")
+cat("    样品数量:", nrow(analysis_data), "\n")
+cat("    化学指标:", nrow(candidates), "个\n")
 ```
 
-## 3. 感官数据分布特征 (Phase 1.5)
-
-我们对 57 个样品的酸感得分进行了描述性统计分析。
+## 二、正态性和鲁棒性检验
 
 ```{r}
-#| label: descriptive-stats
-#| echo: false
-#| warning: false
+# ==========================================================
+#  数据体检自测脚本 (No Black Box)
+# ==========================================================
+library(readr)
+library(dplyr)
+library(tidyr)
+library(rstatix) # 用于正态性检验
 
-# 这里放 Phase 1.5 的代码
-# 绘制分布图
-p_dist <- ggplot(analysis_data, aes(x = Sourness_Score)) +
-  geom_histogram(aes(y = after_stat(density)), binwidth = 0.5, 
-                 fill = "#69b3a2", color = "white", alpha = 0.8) +
-  geom_density(color = "#404080", linewidth = 1.2) +
-  labs(title = "Distribution of Sourness Scores (N=57)",
-       x = "Sourness Score", y = "Density") +
-  theme_bw()
+# 1. 读取数据
+df <- read_csv("data-57.csv") 
+num_cols <- df %>% select(where(is.numeric)) %>% colnames()
 
-print(p_dist)
+
+# ----------------------------------------------------------
+# A. 正态性检验 (Shapiro-Wilk 方法)
+# 原理：P > 0.05 代表正态；P < 0.05 代表不正态
+# ----------------------------------------------------------
+normality_report <- data.frame(Variable = num_cols, P_value = NA, Is_Normal = NA)
+
+for (i in 1:length(num_cols)) {
+  col <- num_cols[i]
+  vals <- df[[col]]
+  
+  # Shapiro检验要求样本量 3-5000
+  if (length(na.omit(vals)) >= 3) {
+    res <- shapiro_test(vals)
+    normality_report$P_value[i] <- res$p.value
+    normality_report$Is_Normal[i] <- ifelse(res$p.value > 0.05, "Yes", "No")
+  }
+}
+
+# 保存正态性报告
+View(normality_report)
+
+
+
+# ----------------------------------------------------------
+# B. 鲁棒离群值检测 (IQR / Boxplot Method)
+# 原理：不看平均值，看中位数。
+# 标准：超过 (Q3 + 3*IQR) 或 低于 (Q1 - 3*IQR) 为极端异常
+# ----------------------------------------------------------
+robust_report <- data.frame()
+
+for (col in num_cols) {
+  vals <- df[[col]]
+  
+  # 计算四分位数 (25% 和 75%)
+  Q1 <- quantile(vals, 0.25, na.rm = TRUE)
+  Q3 <- quantile(vals, 0.75, na.rm = TRUE)
+  IQR_val <- Q3 - Q1
+  median_val <- median(vals, na.rm = TRUE)
+  
+  # 定义极端异常的界限 (Extreme Outlier Limits)
+  # 这里的 3 倍 IQR 相当于抓 "极度离谱" 的值
+  # 如果想抓得严一点，可以把 3 改成 1.5
+  upper_limit <- Q3 + 3 * IQR_val
+  lower_limit <- Q1 - 3 * IQR_val
+  
+  # 找到异常值的位置
+  bad_idx <- which(vals > upper_limit | vals < lower_limit)
+  
+  if (length(bad_idx) > 0) {
+    temp <- data.frame(
+      Variable = col,
+      SampleID = df$'样品编号'[bad_idx],
+      Value = vals[bad_idx],
+      Median = median_val,
+      # 计算偏离程度 (倍数)：(值 - 中位数) / IQR
+      # 这个值越大，说明越离谱
+      Deviation_Score = round((vals[bad_idx] - median_val) / IQR_val, 2)
+    )
+    # 过滤掉 Deviation_Score 无穷大或太小的情况
+    temp <- temp %>% filter(is.finite(Deviation_Score) & abs(Deviation_Score) > 0)
+    
+    robust_report <- rbind(robust_report, temp)
+  }
+}
+
+# 按离谱程度排序 (从大到小)
+robust_report <- robust_report %>% arrange(desc(Deviation_Score))
+
+# 查看
+View(robust_report)
 ```
 
-如上图所示，样品得分呈现正态分布趋势，覆盖了从低酸到高酸的完整区间。
-
-## 4. 关键差异指标筛选 (Phase 2)
-
-使用 Kruskal-Wallis 检验筛选不同酸感等级间的差异物质。
+## 三、描述性统计
 
 ```{r}
-#| label: kw-test
-#| include: false 
+# ==========================================================
+# Phase 2: 描述性统计 (Descriptive Statistics) - 修正版
+# ==========================================================
 
-# 这里放 Phase 2 的代码 (代码运行但不显示在文章中，因为只要结果)
-# (为了演示简洁，这里省略了具体的KW循环代码，你可以把那段粘过来)
-# 假设我们已经筛完了...
+# 1. 安全检查：确保数据已加载
+if (!exists("analysis_data")) stop("错误：analysis_data 不存在，请先运行 Phase 1！")
+
+# 2. 【关键修正】自动定义 chemical_vars
+# 逻辑：从所有列名中，排除掉 "Sample_ID", "Sourness_Score", "Group" 等非化学指标
+# 这样不管你前面有没有定义，这里都会重新抓取一遍，保证不报错
+non_chem_cols <- c("Sample_ID", "SampleID", "Sourness_Score", "Group", "样品编号", "酸感得分")
+chemical_vars <- setdiff(colnames(analysis_data), non_chem_cols)
+
+# 检查一下抓到了多少个
+cat(">>> 识别到化学指标数量:", length(chemical_vars), "个\n")
+
+# 3. 计算基础统计量 (均值、标准差、变异系数)
+raw_stats <- analysis_data %>%
+  group_by(Group) %>%
+  summarise(across(all_of(chemical_vars), 
+                   list(
+                     Mean = ~mean(., na.rm = TRUE), 
+                     SD   = ~sd(., na.rm = TRUE),
+                     CV   = ~ (sd(., na.rm = TRUE) / mean(., na.rm = TRUE)) * 100
+                   ),
+                   .names = "{.col}__{.fn}"))
+
+# 4. 格式化输出 (制作论文表)
+# 这一步需要 mapping_df (或 name_mapping)，我们自动检测一下你用的是哪个
+if (exists("mapping_df")) {
+  use_mapping <- mapping_df
+} else if (exists("name_mapping")) {
+  use_mapping <- name_mapping
+} else {
+  stop("错误：找不到映射表 (mapping_df 或 name_mapping)，请检查 Phase 1。")
+}
+
+desc_stats_paper <- raw_stats %>%
+  pivot_longer(cols = -Group, 
+               names_to = c("Computational_Name", "Stat"), 
+               names_sep = "__") %>%
+  pivot_wider(names_from = Stat, values_from = value) %>%
+  
+  # 生成 Mean ± SD 和 CV
+  mutate(
+    `Mean±SD` = paste0(sprintf("%.2f", Mean), " ± ", sprintf("%.2f", SD)),
+    CV = round(CV, 2)
+  ) %>%
+  
+  select(Group, Computational_Name, `Mean±SD`, CV) %>%
+  
+  pivot_wider(names_from = Group, 
+              values_from = c(`Mean±SD`, CV),
+              names_glue = "{Group}_{.value}") %>%
+  
+  # 关联中文名
+  left_join(use_mapping, by = "Computational_Name") %>%
+  select(Display_Name, everything(), -Computational_Name)
+
+# 5. 保存
+write_csv(desc_stats_paper, "Table1_Descriptive_Statistics_Paper.csv")
+
+cat(">>> 描述性统计表 (Table 1) 已生成！\n")
+print(head(desc_stats_paper))
 ```
-
-## 5. 核心指标与酸感的相关性 (Phase 3)
-
-基于专家经验与统计相关性，我们筛选出了 16 个核心指标（包含酸、糖、碱、多酚四大类）。
-
-```{r}
-#| label: correlation-plot
-#| fig-width: 8
-#| fig-height: 8
-#| warning: false
-
-# 这里放 Phase 3 的核心绘图代码
-
-# A. 定义专家名单
-expert_list <- c(
-  "乙酸", "丙酸", "乳酸", "柠檬酸", "草酸", "3-甲基戊酸",
-  "总糖", "还原糖", "蔗糖", "尼古丁", "总氮", "糖碱比",
-  "绿原酸", "芸香苷", "DDMP", "脯氨酸"
-)
-
-# B. 计算相关性 (简化版逻辑)
-cor_results <- data.frame()
-# ... (把之前 Phase 3 的循环代码贴在这里) ...
-# 为了演示，假设 cor_results 已经算好了
-
-# C. 绘图 (把你 Phase 3 最后那段 ggplot 代码贴在这里)
-# p_loll <- ggplot(...)
-# print(p_loll)
-```
-
-通过棒棒糖图可以直观看出，乙酸等挥发性酸与酸感呈正相关，而尼古丁等生物碱起到了显著的抑制作用。123是啊但是发生
-
-第三次测试了，这次不点覆盖
-
-第四次测试，不pull试一下
