@@ -5,12 +5,9 @@ format: html
 editor: visual
 ---
 
-## \##  〇、项目概述与环境配置
+## \## 〇、项目概述与环境配置
 
-\*\*核心策略：\*\*
-[1.]{.underline}  \*\*数据源\*\*：仅使用 N=57 发现集，保证分析的一致性和统计效力。
-[2.]{.underline}  \*\*筛选逻辑\*\*：结合“统计显著性（Spearman/Kruskal-Wallis）”与“专家经验（16个核心指标）”。
-[3.]{.underline}  \*\*验证方式\*\*：通过聚类热图（Clustering Heatmap）验证核心指标是否能还原感官分类。
+\*\*核心策略：\*\* [1.]{.underline} \*\*数据源\*\*：仅使用 N=57 发现集，保证分析的一致性和统计效力。 [2.]{.underline} \*\*筛选逻辑\*\*：结合“统计显著性（Spearman/Kruskal-Wallis）”与“专家经验（16个核心指标）”。 [3.]{.underline} \*\*验证方式\*\*：通过聚类热图（Clustering Heatmap）验证核心指标是否能还原感官分类。
 
 ```{r}
 #| label: setup
@@ -180,6 +177,8 @@ View(robust_report)
 
 ## 三、描述性统计
 
+## 3.1酸感描述性统计
+
 ```{r}
 # ==========================================================
 # Phase 2: 描述性统计 (Descriptive Statistics) - 中英文混合旗舰版
@@ -266,6 +265,87 @@ cat(">>> 列顺序已调整：N -> Min/Max -> Mean -> Median(Robust) -> CV -> Sk
 
 # 展示表格
 knitr::kable(final_table1, caption = "表1：酸感得分描述性统计 (Table 1: Descriptive Statistics of Sourness Scores)")
+```
+
+## 3.2 化学指标变异系数图
+
+```{r}
+# ==========================================================
+# 2.1 补充图表：化学指标变异系数 (CV) 分布图
+# ==========================================================
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# 1. 准备数据
+# 假设 analysis_data 已经加载
+# 我们需要剔除 metadata (Sample_ID, Group, Sourness_Score 等)
+# 只保留那 100 多个化学指标
+# 这里假设前 4 列是基本信息，第 5 列开始是化学指标
+# 【注意】请根据你的实际数据调整 select 的排除项
+chem_data <- analysis_data %>%
+  select(-Sample_ID, -Group, -Sourness_Score) %>%
+  select(where(is.numeric)) # 确保只选数值列
+
+# 2. 计算每个指标的 CV (变异系数)
+cv_stats <- chem_data %>%
+  summarise(across(everything(), list(
+    Mean = ~mean(., na.rm = TRUE),
+    SD = ~sd(., na.rm = TRUE)
+  ))) %>%
+  pivot_longer(cols = everything(), 
+               names_to = c("Feature", "Stat"), 
+               names_sep = "_") %>%
+  pivot_wider(names_from = Stat, values_from = value) %>%
+  mutate(
+    CV = (SD / Mean) * 100
+  ) %>%
+  arrange(CV) %>% # 按 CV 从小到大排序
+  mutate(
+    Rank = row_number(), # 生成排名 1, 2, 3...
+    Is_High_Var = ifelse(CV > 20, "High Variation (>20%)", "Low Variation") # 设定一个阈值分类
+  )
+
+# 3. 绘图 (S型排位散点图)
+p_cv <- ggplot(cv_stats, aes(x = Rank, y = CV)) +
+  # 画点，颜色根据 CV 大小渐变
+  geom_point(aes(color = CV), size = 2.5, alpha = 0.8) +
+  
+  # 添加 20% 阈值线
+  geom_hline(yintercept = 20, linetype = "dashed", color = "red", alpha = 0.6) +
+  annotate("text", x = 5, y = 25, label = "Threshold: CV = 20%", color = "red", hjust = 0, size = 3.5) +
+  
+  # 颜色设置
+  scale_color_gradient(low = "#4DBBD5", high = "#E64B35", name = "CV (%)") +
+  
+  # 标注几个 CV 特别大的关键物质 (比如 Top 3)
+  geom_text(data = tail(cv_stats, 3), 
+            aes(label = Feature), 
+            hjust = 1.1, vjust = 0.5, size = 3, color = "black") +
+  
+  # 主题美化
+  theme_bw() +
+  labs(
+    
+    subtitle = paste0("Total ", nrow(cv_stats), " Indicators | Mean CV: ", round(mean(cv_stats$CV), 1), "%"),
+    x = "化学指标",
+    y = "变异系数 (%)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+
+# 4. 保存
+ggsave("Figure1_Chemical_CV_Distribution.PDF", p_cv, width = 8, height = 5, dpi = 300)
+
+print(p_cv)
+
+# 5. 生成论文写作素材 (直接算出来填空)
+cat(">>> 论文写作素材 (2.1节):\n")
+cat(paste0("本研究共检测了 ", nrow(cv_stats), " 种化学成分。\n"))
+cat(paste0("统计分析显示，化学成分的变异系数 (CV) 范围为 ", round(min(cv_stats$CV),1), "% 至 ", round(max(cv_stats$CV),1), "%。\n"))
+cat(paste0("其中，", sum(cv_stats$CV > 20), " 个指标 (占比 ", round(sum(cv_stats$CV > 20)/nrow(cv_stats)*100, 1), "%) 的 CV 值大于 20%。\n"))
 ```
 
 ## 四、差异性分析
@@ -555,3 +635,48 @@ cat(">>> PDF 已导出。\n")
     -   **乙酸（正相关）**：直接提供刺激性酸感。
 
     -   **柠檬酸/草酸（负相关）**：作为非挥发性有机酸，它们可能更多起到缓冲 pH 值的效果，使烟气柔和，反而降低了那种“尖刺”的酸感评分。
+
+```{r}
+# ==========================================================
+# Phase 3 Part C: 高端期刊矢量图导出 (SVG/EPS)
+# ==========================================================
+
+# 1. 加载矢量图专用包
+# 如果没安装，请先运行: install.packages("svglite")
+if (!requireNamespace("svglite", quietly = TRUE)) {
+  install.packages("svglite")
+}
+library(svglite)
+library(ggplot2) # 确保加载
+
+# 2. 检查图是否存在
+if (!exists("p")) {
+  stop("错误：找不到绘图对象 'p'。请先运行 Phase 3 Part B 生成图片。")
+}
+
+cat(">>> 开始导出矢量图...\n")
+
+# ----------------------------------------------------------
+# 格式 A: SVG (Scalable Vector Graphics) - 最推荐
+# 优势：体积小，网页友好，支持透明度，Illustrator 可完美编辑
+# ----------------------------------------------------------
+ggsave("3_Expert_Correlation_Lollipop.svg", p, 
+       width = 8, height = 8, 
+       device = "svg")  # 显式指定设备
+
+cat(">>> SVG 格式已导出：3_Expert_Correlation_Lollipop.svg\n")
+
+# ----------------------------------------------------------
+# 格式 B: EPS (Encapsulated PostScript) - 老牌期刊常用
+# 注意：EPS 不支持半透明 (alpha)，如果你的图里有 alpha=0.9，
+# 可能会被强制转成实色或栅格化。
+# ----------------------------------------------------------
+# ggsave("3_Expert_Correlation_Lollipop.eps", p, 
+#        width = 8, height = 8, 
+#        device = cairo_ps,  # 使用 cairo_ps 引擎以支持部分特殊字符
+#        fallback_resolution = 300)
+
+# cat(">>> EPS 格式已导出。\n")
+
+
+```
