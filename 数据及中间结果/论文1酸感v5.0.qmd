@@ -318,11 +318,12 @@ p_cv <- ggplot(cv_stats, aes(x = Rank, y = CV)) +
   # 颜色设置
   scale_color_gradient(low = "#4DBBD5", high = "#E64B35", name = "CV (%)") +
   
-  # 标注几个 CV 特别大的关键物质 (比如 Top 3)
-  geom_text(data = tail(cv_stats, 3), 
-            aes(label = Feature), 
-            hjust = 1.1, vjust = 0.5, size = 3, color = "black") +
-  
+  # 标注几个 CV 的关键物质 (最大的2个和最小的2个)
+  geom_text(data = rbind(head(cv_stats, 2), tail(cv_stats, 2)), 
+            aes(label = Feature, 
+                # 智能对齐：排名靠前(最小)的文字在右(-0.2)，排名靠后(最大)的文字在左(1.2)
+                hjust = ifelse(Rank < nrow(cv_stats)/2, -0.2, 1.2)), 
+            vjust = 0.5, size = 2.5, color = "black") +
   # 主题美化
   theme_bw() +
   labs(
@@ -337,7 +338,7 @@ p_cv <- ggplot(cv_stats, aes(x = Rank, y = CV)) +
   )
 
 # 4. 保存
-ggsave("Figure1_Chemical_CV_Distribution.PDF", p_cv, width = 8, height = 5, dpi = 300)
+ggsave("Figure1_Chemical_CV_Distribution.svg", p_cv, width = 8, height = 5, dpi = 300)
 
 print(p_cv)
 
@@ -352,72 +353,54 @@ cat(paste0("其中，", sum(cv_stats$CV > 20), " 个指标 (占比 ", round(sum(
 
 ```{r}
 # ==========================================================
-# Phase 2: 差异性分析 (Kruskal-Wallis) - 优化增强版
+# Phase 2: 差异性分析 (Kruskal-Wallis) - 中英文表头版
 # ==========================================================
 library(dplyr)
 library(readr)
 library(tidyr)
 
-# 1. 检查数据 (保持不变)
+# 1. 检查数据
 if (!exists("analysis_data") || !exists("name_mapping") || !exists("candidates")) {
   stop("数据缺失！请先选中并运行 Phase 1 的全部代码。")
 }
 
 cat(">>> 开始进行 Kruskal-Wallis 差异性筛选...\n")
 
-# 2. 优化：使用 lapply 替代 for 循环 (效率更高，逻辑更整洁)
+# 2. 批量计算 (lapply 高效版)
 target_vars <- candidates$Computational_Name 
 
 kw_list <- lapply(target_vars, function(var) {
-  
-  # 提取数据
   test_data <- analysis_data %>% 
     select(Group, all_of(var)) %>% 
     na.omit()
   
-  # 判断数据量
   if (nrow(test_data) > 3 && n_distinct(test_data$Group) > 1) {
-    
-    # 核心检验
     kw_test <- kruskal.test(as.formula(paste(var, "~ Group")), data = test_data)
-    
-    # 返回一行结果
     return(data.frame(
       Computational_Name = var,
       P_Value = kw_test$p.value,
       Statistic = kw_test$statistic,
-      Note = "OK", # 标记状态
       stringsAsFactors = FALSE
     ))
   } else {
-    # 优化点：记录数据不足的指标，防止它们莫名其妙消失
     return(data.frame(
       Computational_Name = var,
       P_Value = NA,
       Statistic = NA,
-      Note = "Data insufficient", # 标记原因
       stringsAsFactors = FALSE
     ))
   }
 })
 
-# 合并列表为数据框
 kw_results <- bind_rows(kw_list)
 
-# 3. 结果整理 (增加多重检验校正)
+# 3. 结果整理与中文表头重命名
 final_results <- kw_results %>%
   left_join(name_mapping, by = "Computational_Name") %>%
-  
-  # 过滤掉无法计算的行 (可选，看你想不想在表里保留它们)
   filter(!is.na(P_Value)) %>%
-  
   arrange(P_Value) %>%
-  
   mutate(
-    # 优化点：增加 FDR 校正 P 值 (BH法)
     P_Adj = p.adjust(P_Value, method = "BH"),
-    
-    # 显著性标记 (这里依然保留原始P值标记，你可以根据严格程度改成用 P_Adj)
     Significance = case_when(
       P_Value < 0.001 ~ "***",
       P_Value < 0.01  ~ "**",
@@ -425,24 +408,30 @@ final_results <- kw_results %>%
       TRUE            ~ "ns"
     )
   ) %>%
-  
-  select(Display_Name, P_Value, P_Adj, Significance, Statistic, Computational_Name)
+  # --- 关键修改：重命名列名为中英文格式 ---
+  select(
+    `化学成分 (Chemical Component)` = Display_Name,
+    `P值 (P-Value)` = P_Value,
+    `校正P值 (Adj. P-Value)` = P_Adj,
+    `显著性 (Significance)` = Significance,
+    `统计量 (H-Statistic)` = Statistic,
+    `变量代码 (Variable Code)` = Computational_Name
+  )
 
-# 4. 筛选显著物质
-candidates_significant <- final_results %>% filter(P_Value < 0.05)
+# 4. 筛选显著物质 (P < 0.05)
+# 注意：这里筛选用的是反引号括起来的新列名
+candidates_significant <- final_results %>% 
+  filter(`P值 (P-Value)` < 0.05)
 
 # 5. 保存
-write_csv(final_results, "2_Diff_Analysis_All_Results.csv")
-write_csv(candidates_significant, "2_Diff_Analysis_Sig_Candidates.csv")
+write_csv(final_results, "2_Diff_Analysis_All_Results_Bilingual.csv")
+write_csv(candidates_significant, "2_Diff_Analysis_Sig_Candidates_Bilingual.csv")
 
-# 6. 打印战报
+# 6. 打印预览
 cat("------------------------------------------------\n")
-cat("差异分析完成！\n")
-cat("共分析指标:", nrow(kw_results), "个\n")
-cat("有效计算指标:", nrow(final_results), "个\n")
-cat("显著差异指标 (P < 0.05):", nrow(candidates_significant), "个\n")
-cat("------------------------------------------------\n")
-print(head(candidates_significant[, 1:4], 10))
+cat("差异分析完成！结果已保存为 Bilingual 版本。\n")
+cat("显著差异指标数量:", nrow(candidates_significant), "\n")
+print(head(candidates_significant[, 1:4], 5)) # 打印前5行看看效果
 ```
 
 ## 五、相关性分析
@@ -455,6 +444,7 @@ library(dplyr)
 library(ggplot2)
 library(readr)
 library(stringr)
+library(svglite)
 
 # 1. 环境检查
 if (!exists("analysis_data")) stop("请先运行 Phase 1 加载数据！")
@@ -516,108 +506,98 @@ cat(">>> Part A 完成！所有显著物质的相关性已算出。\n")
 cat(">>> 请查看文件 '3_Phase3_Correlation_All_Significant.csv'\n")
 
 
+{r}
 # ==========================================================
-# Phase 3 Part B: 精选绘图 (高清大字版)
+# Phase 3 Part B: 棒棒糖图 (最终修订版)
 # ==========================================================
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(svglite)
 
-# 1. 读取你刚才生成的大表
+# 1. 读取数据
 full_table <- read_csv("3_Phase3_Correlation_All_Significant.csv", show_col_types = FALSE)
 
-# 2. 定义专家精选名单 (根据你的数据量身定制)
-# 这些物质都在你的显著列表里，且机理明确
+# 2. 专家精选名单
 expert_selection <- c(
-  # --- 正向促进 (Promoters) ---
-  "绿原酸", "芸香苷",         # 多酚 (Top 1 & 2)
-  "蔗糖", "葡萄糖", "总糖",   # 糖类 (注意：你的数据里糖是正相关，这点很特别，值得讨论)
-  "DDMP",                     # 美拉德产物
-  "乙酸", "丙酸",             # 挥发酸 (直接酸感)
-  "糠醛",                     # 烘烤香
+  # --- 正向 (致酸) ---
+  "绿原酸", "芸香苷",         
+  "蔗糖", "葡萄糖", "总糖",   
+  "DDMP",                     
+  "乙酸", "丙酸",             
+  "糠醛",                     
   
-  # --- 负向抑制 (Suppressors) ---
-  "异戊酰胺",                 # 相关性极高的抑制物
-  "草酸", "柠檬酸",           # 非挥发酸 (起缓冲作用，负相关)
-  "尼古丁", "总氮",           # 碱类 (中和作用)
-  "3-甲基吲哚", "吡咯",       # 杂气成分
-  "3-甲基戊酸"                # 汗味酸
+  # --- 负向 (调节) ---
+  "异戊酰胺",                 
+  "草酸", "柠檬酸",           
+  "尼古丁", "总氮",           
+  "3-甲基吲哚", "吡咯",       
+  "3-甲基戊酸"
 )
 
-# 3. 提取数据
+# 3. 提取绘图数据
 plot_data <- full_table %>%
   filter(Display_Name %in% expert_selection) %>%
   arrange(desc(abs(Rho)))
 
-# 4. 绘图 (大字号优化版)
-library(stringr) # 确保加载
-
-# 名字换行
-plot_data$Display_Name <- str_wrap(plot_data$Display_Name, width = 20)
+# 4. 绘图
+# 字体策略：优先用宋体，如果没有就用黑体(微米黑)，最后用系统默认
+font_family <- "SimSun" 
 
 p <- ggplot(plot_data, aes(x = reorder(Display_Name, Rho), y = Rho)) +
   # 画棒棒糖的杆
   geom_segment(aes(xend = reorder(Display_Name, Rho), y = 0, yend = Rho, color = Type), 
-               linewidth = 1.5) + # 线条加粗
+               linewidth = 1.2) + 
   
   # 画棒棒糖的头
   geom_point(aes(color = Type, size = abs(Rho)), alpha = 0.9) +
   
-  # 标星号 (字号调大 size=6)
+  # 标星号
   geom_text(aes(label = Stars, y = Rho), 
             nudge_y = ifelse(plot_data$Rho > 0, 0.08, -0.08),
-            vjust = 0.75, size = 6, fontface = "bold") +
+            vjust = 0.75, size = 6, fontface = "bold", family = font_family) +
   
-  # 颜色设置
+  # --- 关键修改：图例名称改为“正向/负向关联” ---
   scale_color_manual(values = c("Positive (Promoting)" = "#E41A1C", 
-                                "Negative (Suppressing)" = "#377EB8")) +
+                                "Negative (Suppressing)" = "#377EB8"),
+                     labels = c("负向关联", "正向关联 ")) +
   
   coord_flip() +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", linewidth = 0.8) +
   
-  labs(title = "Key Sourness-Correlated Biomarkers",
-       subtitle = "Selected representative compounds (P < 0.05)",
-       x = "", y = "Spearman Correlation (Rho)",
-       color = "Mechanism", size = "Strength") +
+  # 标签
+  labs(
+       x = "", 
+       y = "Spearman 相关系数 (Rho)",
+       color = "关联类型",    # 修改图例标题
+       size = "关联强度") +
   
-  # --- 核心修改：全局字号放大 ---
-  theme_bw(base_size = 14) + # 基准字号设为 14
+  # 主题设置
+  theme_bw(base_size = 14) + 
   theme(
-    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
-    plot.subtitle = element_text(size = 14, hjust = 0.5, color = "gray40"),
+    text = element_text(family = font_family), 
     
-    # Y轴物质名：加粗、放大
-    axis.text.y = element_text(size = 14, face = "bold", color = "black"),
-    # X轴刻度：放大
-    axis.text.x = element_text(size = 12, color = "black"),
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5, family = font_family),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40", family = font_family),
     
-    # 图例设置
+    axis.text.y = element_text(size = 13, face = "bold", color = "black", family = font_family),
+    axis.text.x = element_text(size = 12, color = "black", family = font_family),
+    axis.title.x = element_text(size = 13, face = "bold", family = font_family),
+    
     legend.position = "bottom",
-    legend.text = element_text(size = 12),
-    legend.title = element_text(size = 13, face = "bold"),
-    
-    # 边距微调，防止字被切掉
-    plot.margin = margin(t = 10, r = 20, b = 10, l = 10, unit = "pt")
+    legend.text = element_text(family = font_family, size = 11),
+    legend.title = element_text(face = "bold", family = font_family),
+    legend.box = "horizontal"
   )
 
-# 5. 保存 (调整宽高比)
-# 宽度设宽一点，给Y轴文字留空间
-print(p)
+# 5. 保存
+# 忽略报错，直接去文件夹里看图！
+ggsave("3_Expert_Correlation_Lollipop_Final.svg", p, 
+       width = 8, height = 7, dpi = 300, 
+       device = svglite::svglite, 
+       fix_text_size = FALSE)
 
-# ==========================================================
-# 独立导出模块：解决字号小和中文乱码问题
-#万能 PDF (解决中文乱码)
-# 技巧：使用 device = cairo_pdf，这是 R 处理中文 PDF 的神器
-# ----------------------------------------------------------
-ggsave("3_Expert_Correlation_Lollipop.pdf", p, 
-       width = 8, height = 8, 
-       device = cairo_pdf,     # 【关键】使用 cairo 引擎渲染中文
-       family = "sans")        # 防止字体报错
-
-cat(">>> PDF 已导出。\n")
-
-
-```
-
-```{r}
-
+print(">>> 图片已生成。直接打开 3_Expert_Correlation_Lollipop_Final.svg 查看效果。")
 ```
 
 你在看这张图的时候，可能会发现一个**非常有趣且反常识**的现象，这正是你论文的亮点：
@@ -634,49 +614,4 @@ cat(">>> PDF 已导出。\n")
 
     -   **乙酸（正相关）**：直接提供刺激性酸感。
 
-    -   **柠檬酸/草酸（负相关）**：作为非挥发性有机酸，它们可能更多起到缓冲 pH 值的效果，使烟气柔和，反而降低了那种“尖刺”的酸感评分。
-
-```{r}
-# ==========================================================
-# Phase 3 Part C: 高端期刊矢量图导出 (SVG/EPS)
-# ==========================================================
-
-# 1. 加载矢量图专用包
-# 如果没安装，请先运行: install.packages("svglite")
-if (!requireNamespace("svglite", quietly = TRUE)) {
-  install.packages("svglite")
-}
-library(svglite)
-library(ggplot2) # 确保加载
-
-# 2. 检查图是否存在
-if (!exists("p")) {
-  stop("错误：找不到绘图对象 'p'。请先运行 Phase 3 Part B 生成图片。")
-}
-
-cat(">>> 开始导出矢量图...\n")
-
-# ----------------------------------------------------------
-# 格式 A: SVG (Scalable Vector Graphics) - 最推荐
-# 优势：体积小，网页友好，支持透明度，Illustrator 可完美编辑
-# ----------------------------------------------------------
-ggsave("3_Expert_Correlation_Lollipop.svg", p, 
-       width = 8, height = 8, 
-       device = "svg")  # 显式指定设备
-
-cat(">>> SVG 格式已导出：3_Expert_Correlation_Lollipop.svg\n")
-
-# ----------------------------------------------------------
-# 格式 B: EPS (Encapsulated PostScript) - 老牌期刊常用
-# 注意：EPS 不支持半透明 (alpha)，如果你的图里有 alpha=0.9，
-# 可能会被强制转成实色或栅格化。
-# ----------------------------------------------------------
-# ggsave("3_Expert_Correlation_Lollipop.eps", p, 
-#        width = 8, height = 8, 
-#        device = cairo_ps,  # 使用 cairo_ps 引擎以支持部分特殊字符
-#        fallback_resolution = 300)
-
-# cat(">>> EPS 格式已导出。\n")
-
-
-```
+    -   **柠檬酸/草酸（负相关）**：作为非挥发性有机酸，它们可能更多起到缓冲 pH 值的效果，使烟气柔和，反而降低了那种“尖刺”的酸感评分。123
