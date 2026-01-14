@@ -615,3 +615,161 @@ print(">>> 图片已生成。直接打开 3_Expert_Correlation_Lollipop_Final.sv
     -   **乙酸（正相关）**：直接提供刺激性酸感。
 
     -   **柠檬酸/草酸（负相关）**：作为非挥发性有机酸，它们可能更多起到缓冲 pH 值的效果，使烟气柔和，反而降低了那种“尖刺”的酸感评分。123
+
+## 六、聚类分析
+
+```{r}
+# ==========================================================
+# Phase 4: 聚类热图 (最终中文精修版)
+# ==========================================================
+library(pheatmap)
+library(dplyr)
+library(readr)
+library(RColorBrewer)
+library(svglite)
+library(ggplotify)
+library(ggplot2)
+
+# 1. 准备数据
+if (!exists("analysis_data")) stop("数据未加载")
+sample_info <- read_csv("sample_info.csv", show_col_types = FALSE) %>%
+  mutate(
+    # 重新计算等级
+    Sourness_Class = case_when(
+      Sourness_Score == 0 ~ "无酸",
+      Sourness_Score > 0 & Sourness_Score <= 1.5 ~ "微酸",
+      Sourness_Score > 1.5 & Sourness_Score <= 3.0 ~ "稍酸",
+      Sourness_Score > 3.0 & Sourness_Score <= 4.5 ~ "酸",
+      Sourness_Score > 4.5 ~ "强酸"
+    )
+  )
+
+# 读取之前的映射表
+name_map <- read_csv("2_Diff_Analysis_Sig_Candidates.csv", show_col_types = FALSE) %>%
+  select(Computational_Name, Display_Name)
+
+cor_table <- read_csv("3_Phase3_Correlation_All_Significant.csv", show_col_types = FALSE)
+sig_vars <- cor_table %>% filter(P_Value < 0.05) %>% pull(Computational_Name)
+
+# 2. 准备矩阵
+heatmap_matrix <- analysis_data %>% select(Sample_ID, all_of(sig_vars)) %>% as.data.frame()
+rownames(heatmap_matrix) <- heatmap_matrix$Sample_ID
+heatmap_matrix <- heatmap_matrix[, -1]
+
+# 中文名替换
+current_names <- colnames(heatmap_matrix)
+new_names <- name_map$Display_Name[match(current_names, name_map$Computational_Name)]
+colnames(heatmap_matrix) <- ifelse(is.na(new_names), current_names, new_names)
+
+# Z-Score
+heatmap_matrix_scaled <- scale(heatmap_matrix)
+
+# 3. 准备注释 (这里把列名改为中文，图例就会显示中文)
+ann_col_df <- sample_info %>%
+  select(Sample_ID, Sourness_Class, Tobacco_Type) %>%
+  # ---【核心修改】重命名列名 ---
+  rename(`酸感等级` = Sourness_Class, `原料类型` = Tobacco_Type) %>%
+  as.data.frame()
+
+rownames(ann_col_df) <- ann_col_df$Sample_ID
+ann_col_df <- ann_col_df[, -1] # 去掉ID
+
+# 对齐
+common <- intersect(rownames(heatmap_matrix_scaled), rownames(ann_col_df))
+heatmap_matrix_scaled <- heatmap_matrix_scaled[common, ]
+ann_col_df <- ann_col_df[common, ]
+
+# 4. 颜色定义 (注意名字要和上面中文列名对应)
+# ==========================================================
+# 仅修改颜色定义部分
+# ==========================================================
+ann_colors <- list(
+  # 酸感等级 (保持不变)
+  `酸感等级` = c(
+    "无酸" = "#2C7BB6",   # 深蓝
+    "微酸" = "#ABDDA4",   # 浅绿
+    "稍酸" = "#FDAE61",   # 浅橙
+    "酸"   = "#D7191C",   # 红
+    "强酸" = "#800026"    # 深红
+  ),
+  
+  # 原料类型 (按您的要求修改)
+  `原料类型` = c(
+    "烤烟"   = "#33A02C", # 绿色 (保持)
+    "晒黄烟" = "#FFD700", # 金黄色 (改为黄色)
+    "晒红烟" = "#E31A1C", # 正红色 (改为红色)
+    "雪茄烟" = "#B15928", # 棕色 (指定颜色)
+    "香料烟" = "#FF7F00", # 橙色 (指定颜色)
+    "白肋烟" = "#1F78B4"  # 蓝色 (保持)
+  )
+)
+
+# 5. 绘图
+ph <- pheatmap(t(heatmap_matrix_scaled), 
+         annotation_col = ann_col_df, 
+         annotation_colors = ann_colors,
+         clustering_distance_rows = "correlation", 
+         clustering_distance_cols = "euclidean",   
+         clustering_method = "complete",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
+         
+         # 视觉设置
+         show_colnames = FALSE, # 不显示样品名
+         show_rownames = TRUE,  # 显示物质名
+         fontsize_row = 8,
+         border_color = NA,
+         main = NA,             # 【修改】去掉标题
+         silent = TRUE
+)
+
+# 转换并保存
+p_gg <- as.ggplot(ph)
+
+# 保存SVG
+ggsave("4_Cluster_Heatmap_Final_CN.svg", p_gg, 
+       width = 10, height = 12, 
+       device = svglite::svglite, 
+       fix_text_size = FALSE)
+
+print(">>> 绘图完成！请忽略警告，查看 4_Cluster_Heatmap_Final_CN.svg")
+print(">>> 提示：图中大面积的蓝色是因为 Z-Score 标准化后，低含量样品较多，这属于正常现象。")
+```
+
+```{r}
+# ----------------------------------------------------------
+# 补充步骤：同时保存为高清 PNG 格式 (方便预览和插入PPT)
+# ----------------------------------------------------------
+
+# 使用 ggsave 保存为 png
+ggsave("4_Cluster_Heatmap_Final_CN.png", p_gg, 
+       width = 10, height = 12, 
+       dpi = 300,             # 设置为 300 dpi (高清标准)
+       bg = "white")          # 确保背景是白色的，防止透明
+
+print(">>> PNG宽图片也已生成：4_Cluster_Heatmap_Final_CN.png")
+```
+
+```{r}
+# ==========================================================
+# 辅助分析：聚类分支统计 (修正列名版)
+# ==========================================================
+# 1. 提取聚类结果 (切成 2 刀)
+sample_clusters <- cutree(ph$tree_col, k = 2)
+
+cat("\n====== 聚类分支详细解剖 ======\n")
+
+# --- 分支 1 (Cluster I) ---
+group1_samples <- names(sample_clusters[sample_clusters == 1])
+cat(">>> 分支 1 (30个样品) 的成分构成：\n")
+# 这里用 Tobacco_Type，因为 sample_info 原始表里是英文列名
+print(table(sample_info$Tobacco_Type[sample_info$Sample_ID %in% group1_samples]))
+cat("   [推测]：这应该是红色/绿色集中的‘致酸/烤烟簇’。\n\n")
+
+# --- 分支 2 (Cluster II) ---
+group2_samples <- names(sample_clusters[sample_clusters == 2])
+cat(">>> 分支 2 (27个样品) 的成分构成：\n")
+print(table(sample_info$Tobacco_Type[sample_info$Sample_ID %in% group2_samples]))
+cat("   [推测]：这应该是蓝色/杂色集中的‘低酸/晾晒烟簇’。\n")
+
+cat("\n==============================\n")
+```
