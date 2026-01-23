@@ -438,7 +438,7 @@ print(head(candidates_significant[, 1:4], 5)) # 打印前5行看看效果
 
 ```{r}
 # ==========================================================
-# Phase 3: 差异物质的相关性分析与重点可视化
+# Phase 3: 差异物质的相关性分析 (智能修复版)
 # ==========================================================
 library(dplyr)
 library(ggplot2)
@@ -450,14 +450,29 @@ library(svglite)
 if (!exists("analysis_data")) stop("请先运行 Phase 1 加载数据！")
 
 # 2. 读取 Phase 2 的“幸存者名单”
-# 逻辑：只分析在 Phase 2 中差异显著的物质，这是严格的漏斗
-if (!file.exists("2_Diff_Analysis_Sig_Candidates.csv")) {
+if (!file.exists("2_Diff_Analysis_Sig_Candidates_Bilingual.csv")) {
   stop("找不到 Phase 2 的结果文件，请先运行差异分析。")
 }
-diff_sig_data <- read_csv("2_Diff_Analysis_Sig_Candidates.csv", show_col_types = FALSE)
-target_vars <- diff_sig_data$Computational_Name
+diff_sig_data <- read_csv("2_Diff_Analysis_Sig_Candidates_Bilingual.csv", show_col_types = FALSE)
 
-cat(">>> Phase 3 分析范围已锁定：仅分析 Phase 2 显著的", length(target_vars), "个物质。\n")
+# --- 【关键修复】：智能匹配变量名列 ---
+# 既然 Phase 2 把名字改长了，我们这里就去抓那个长名字
+if ("Computational_Name" %in% colnames(diff_sig_data)) {
+  # 情况A：如果是英文表头
+  target_vars <- diff_sig_data$Computational_Name
+  # 顺便获取中文名列表（如果有）
+  target_names <- if("Display_Name" %in% colnames(diff_sig_data)) diff_sig_data$Display_Name else target_vars
+  
+} else if ("变量代码 (Variable Code)" %in% colnames(diff_sig_data)) {
+  # 情况B：如果是中英文混合表头 (您现在的 Phase 2 就是这个)
+  target_vars <- diff_sig_data$`变量代码 (Variable Code)`
+  target_names <- diff_sig_data$`化学成分 (Chemical Component)`
+  
+} else {
+  stop("错误：在CSV里找不到变量代码列！请检查 Phase 2 生成的列名。")
+}
+
+cat(">>> Phase 3 分析范围锁定：成功提取到", length(target_vars), "个差异显著物质。\n")
 
 # ----------------------------------------------------------
 # Part A: 全量计算 (生成大表)
@@ -471,15 +486,15 @@ get_stars <- function(p) {
 }
 
 cor_results <- data.frame()
+valid_count <- 0
 
-for (comp_name in target_vars) {
-  # 找回中文名
-  if (exists("name_mapping")) {
-    disp_name <- name_mapping$Display_Name[name_mapping$Computational_Name == comp_name]
-  } else {
-    disp_name <- comp_name
-  }
+# 使用索引 i 同时获取 变量代码 和 中文名称
+for (i in seq_along(target_vars)) {
   
+  comp_name <- as.character(target_vars[i]) # 确保是字符串
+  disp_name <- as.character(target_names[i]) # 对应的中文名
+  
+  # 核心判断：这个代码在原始数据里存在吗？
   if (comp_name %in% colnames(analysis_data)) {
     # 计算 Spearman 相关性
     res <- cor.test(analysis_data[[comp_name]], analysis_data$Sourness_Score, 
@@ -488,116 +503,92 @@ for (comp_name in target_vars) {
     cor_results <- rbind(cor_results, data.frame(
       Display_Name = disp_name,
       Computational_Name = comp_name,
-      Rho = res$estimate,
-      P_Value = res$p.value,
+      Rho = as.numeric(res$estimate), # 强制转数字
+      P_Value = as.numeric(res$p.value),
       Stars = get_stars(res$p.value),
       Type = ifelse(res$estimate > 0, "Positive (Promoting)", "Negative (Suppressing)")
     ))
+    valid_count <- valid_count + 1
+  } else {
+    cat("警告：原始数据中找不到变量 [", comp_name, "]，已跳过。\n")
   }
 }
 
-# 按相关性绝对值排序，生成完整的大表
+# --- 空表保护 ---
+if (nrow(cor_results) == 0) {
+  stop("错误：没有计算出任何结果！请检查 analysis_data 的列名是否和 Phase 2 的变量代码一致。")
+}
+
+# 按相关性绝对值排序
 full_table <- cor_results %>% arrange(desc(abs(Rho)))
 
-# 保存大表 (这就是你稍后要发给我看的东西)
+# 保存大表
 write_csv(full_table, "3_Phase3_Correlation_All_Significant.csv")
 
-cat(">>> Part A 完成！所有显著物质的相关性已算出。\n")
-cat(">>> 请查看文件 '3_Phase3_Correlation_All_Significant.csv'\n")
+cat(">>> Part A 完成！成功计算了", valid_count, "个物质的相关性。\n")
+cat(">>> 结果已保存为 '3_Phase3_Correlation_All_Significant.csv'\n")
 
 
-{r}
-# ==========================================================
-# Phase 3 Part B: 棒棒糖图 (最终修订版)
-# ==========================================================
-library(dplyr)
-library(ggplot2)
-library(readr)
-library(svglite)
+# ----------------------------------------------------------
+# Phase 3 Part B: 棒棒糖图 (自动绘图)
+# ----------------------------------------------------------
+# 1. 直接使用上面计算好的 full_table，不需要重新读取
+cat(">>> 开始绘制棒棒糖图...\n")
 
-# 1. 读取数据
-full_table <- read_csv("3_Phase3_Correlation_All_Significant.csv", show_col_types = FALSE)
+# 2. 专家精选名单 (根据您的数据，您可以手动调整这里)
+# 为了防止报错，我们先看看 full_table 里前 15 个最显著的物质是谁，直接画它们
+# 如果您有特定的专家名单，把下面这行注释掉，解开原来的 expert_selection
+#top_15_vars <- full_table$Display_Name[1:min(15, nrow(full_table))] 
 
-# 2. 专家精选名单
-expert_selection <- c(
-  # --- 正向 (致酸) ---
-  "绿原酸", "芸香苷",         
-  "蔗糖", "葡萄糖", "总糖",   
-  "DDMP",                     
-  "乙酸", "丙酸",             
-  "糠醛",                     
-  
-  # --- 负向 (调节) ---
-  "异戊酰胺",                 
-  "草酸", "柠檬酸",           
-  "尼古丁", "总氮",           
-  "3-甲基吲哚", "吡咯",       
-  "3-甲基戊酸"
-)
+expert_selection <- top_15_vars 
+# 如果要用之前的固定名单，请取消注释下面几行：
+ expert_selection <- c("绿原酸", "芸香苷", "蔗糖", "葡萄糖", "总糖", "DDMP", 
+                      "乙酸", "丙酸", "糠醛", "异戊酰胺", "草酸", "柠檬酸", 
+                      "烟碱", "总氮", "3-甲基吲哚", "吡咯", "3-甲基戊酸")
 
-# 3. 提取绘图数据
+# 3. 提取绘图数据 (加一个保护，防止名单里的名字表里没有)
 plot_data <- full_table %>%
   filter(Display_Name %in% expert_selection) %>%
   arrange(desc(abs(Rho)))
 
-# 4. 绘图
-# 字体策略：优先用宋体，如果没有就用黑体(微米黑)，最后用系统默认
-font_family <- "SimSun" 
-
-p <- ggplot(plot_data, aes(x = reorder(Display_Name, Rho), y = Rho)) +
-  # 画棒棒糖的杆
-  geom_segment(aes(xend = reorder(Display_Name, Rho), y = 0, yend = Rho, color = Type), 
-               linewidth = 1.2) + 
+if (nrow(plot_data) == 0) {
+  cat("警告：绘图数据为空！可能是因为专家名单里的名字在数据里找不到。\n")
+} else {
+  # 4. 绘图
+  font_family <- "SimSun" 
   
-  # 画棒棒糖的头
-  geom_point(aes(color = Type, size = abs(Rho)), alpha = 0.9) +
+  p <- ggplot(plot_data, aes(x = reorder(Display_Name, Rho), y = Rho)) +
+    geom_segment(aes(xend = reorder(Display_Name, Rho), y = 0, yend = Rho, color = Type), 
+                 linewidth = 1.2) + 
+    geom_point(aes(color = Type, size = abs(Rho)), alpha = 0.9) +
+    geom_text(aes(label = Stars, y = Rho), 
+              nudge_y = ifelse(plot_data$Rho > 0, 0.08, -0.08),
+              vjust = 0.75, size = 6, fontface = "bold", family = font_family) +
+    scale_color_manual(values = c("Positive (Promoting)" = "#E41A1C", 
+                                  "Negative (Suppressing)" = "#377EB8"),
+                       labels = c("负向关联", "正向关联 ")) +
+    coord_flip() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", linewidth = 0.8) +
+    labs(
+         x = "", 
+         y = "Spearman 相关系数 (Rho)",
+         color = "关联类型", 
+         size = "关联强度") +
+    theme_bw(base_size = 14) + 
+    theme(
+      text = element_text(family = font_family), 
+      plot.title = element_text(face = "bold", size = 18, hjust = 0.5, family = font_family),
+      legend.position = "bottom"
+    )
   
-  # 标星号
-  geom_text(aes(label = Stars, y = Rho), 
-            nudge_y = ifelse(plot_data$Rho > 0, 0.08, -0.08),
-            vjust = 0.75, size = 6, fontface = "bold", family = font_family) +
+  # 5. 保存
+  ggsave("3_Expert_Correlation_Lollipop_Final.svg", p, 
+         width = 8, height = 7, dpi = 300, 
+         device = svglite::svglite, 
+         fix_text_size = FALSE)
   
-  # --- 关键修改：图例名称改为“正向/负向关联” ---
-  scale_color_manual(values = c("Positive (Promoting)" = "#E41A1C", 
-                                "Negative (Suppressing)" = "#377EB8"),
-                     labels = c("负向关联", "正向关联 ")) +
-  
-  coord_flip() +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", linewidth = 0.8) +
-  
-  # 标签
-  labs(
-       x = "", 
-       y = "Spearman 相关系数 (Rho)",
-       color = "关联类型",    # 修改图例标题
-       size = "关联强度") +
-  
-  # 主题设置
-  theme_bw(base_size = 14) + 
-  theme(
-    text = element_text(family = font_family), 
-    
-    plot.title = element_text(face = "bold", size = 18, hjust = 0.5, family = font_family),
-    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40", family = font_family),
-    
-    axis.text.y = element_text(size = 13, face = "bold", color = "black", family = font_family),
-    axis.text.x = element_text(size = 12, color = "black", family = font_family),
-    axis.title.x = element_text(size = 13, face = "bold", family = font_family),
-    
-    legend.position = "bottom",
-    legend.text = element_text(family = font_family, size = 11),
-    legend.title = element_text(face = "bold", family = font_family),
-    legend.box = "horizontal"
-  )
-
-# 5. 保存
-# 忽略报错，直接去文件夹里看图！
-ggsave("3_Expert_Correlation_Lollipop_Final.svg", p, 
-       width = 8, height = 7, dpi = 300, 
-       device = svglite::svglite, 
-       fix_text_size = FALSE)
-
-print(">>> 图片已生成。直接打开 3_Expert_Correlation_Lollipop_Final.svg 查看效果。")
+  cat(">>> 图片已生成：3_Expert_Correlation_Lollipop_Final.svg\n")
+}
 ```
 
 你在看这张图的时候，可能会发现一个**非常有趣且反常识**的现象，这正是你论文的亮点：
@@ -620,7 +611,7 @@ print(">>> 图片已生成。直接打开 3_Expert_Correlation_Lollipop_Final.sv
 
 ```{r}
 # ==========================================================
-# Phase 4: 聚类热图 (最终中文精修版)
+# Phase 4: 聚类热图 (无ID极简·最终修订版)
 # ==========================================================
 library(pheatmap)
 library(dplyr)
@@ -630,11 +621,13 @@ library(svglite)
 library(ggplotify)
 library(ggplot2)
 
-# 1. 准备数据
-if (!exists("analysis_data")) stop("数据未加载")
+# 1. 环境与数据检查
+if (!exists("analysis_data")) stop("数据未加载，请先运行 Phase 1")
+
+# --- 读取样品信息 ---
+if (!file.exists("sample_info.csv")) stop("找不到 sample_info.csv")
 sample_info <- read_csv("sample_info.csv", show_col_types = FALSE) %>%
   mutate(
-    # 重新计算等级
     Sourness_Class = case_when(
       Sourness_Score == 0 ~ "无酸",
       Sourness_Score > 0 & Sourness_Score <= 1.5 ~ "微酸",
@@ -644,64 +637,77 @@ sample_info <- read_csv("sample_info.csv", show_col_types = FALSE) %>%
     )
   )
 
-# 读取之前的映射表
-name_map <- read_csv("2_Diff_Analysis_Sig_Candidates.csv", show_col_types = FALSE) %>%
-  select(Computational_Name, Display_Name)
+# --- 读取双语映射表 ---
+map_file <- "2_Diff_Analysis_Sig_Candidates_Bilingual.csv"
+if (!file.exists(map_file)) stop(paste("找不到文件:", map_file))
+raw_map <- read_csv(map_file, show_col_types = FALSE)
 
-cor_table <- read_csv("3_Phase3_Correlation_All_Significant.csv", show_col_types = FALSE)
+# 智能提取映射关系
+if ("变量代码 (Variable Code)" %in% colnames(raw_map)) {
+  name_map <- raw_map %>%
+    select(
+      Computational_Name = `变量代码 (Variable Code)`,
+      Display_Name = `化学成分 (Chemical Component)`
+    )
+} else {
+  name_map <- raw_map %>% select(Computational_Name, Display_Name)
+}
+
+# --- 读取相关性结果 (筛选 P < 0.05) ---
+cor_file <- "3_Phase3_Correlation_All_Significant.csv"
+if (!file.exists(cor_file)) stop(paste("找不到文件:", cor_file))
+cor_table <- read_csv(cor_file, show_col_types = FALSE)
 sig_vars <- cor_table %>% filter(P_Value < 0.05) %>% pull(Computational_Name)
 
 # 2. 准备矩阵
-heatmap_matrix <- analysis_data %>% select(Sample_ID, all_of(sig_vars)) %>% as.data.frame()
-rownames(heatmap_matrix) <- heatmap_matrix$Sample_ID
-heatmap_matrix <- heatmap_matrix[, -1]
+# 确保只选出数据中存在的列
+valid_vars <- intersect(sig_vars, colnames(analysis_data))
 
-# 中文名替换
+# 【修改点 1】：不再选 Sample_ID，直接选物质列
+heatmap_matrix <- analysis_data %>% 
+  select(all_of(valid_vars)) %>% 
+  as.data.frame()
+
+# 【修改点 2】：不再设置具体行名，使用默认顺序
+# (pheatmap 会自动处理，不需要我们人为指定 ID)
+
+# --- 中文名替换 ---
 current_names <- colnames(heatmap_matrix)
 new_names <- name_map$Display_Name[match(current_names, name_map$Computational_Name)]
 colnames(heatmap_matrix) <- ifelse(is.na(new_names), current_names, new_names)
 
-# Z-Score
+# --- 特殊改名: 二氢猕猴桃内酯-烟气 ---
+target_old_name <- "二氢猕猴桃内酯2"
+target_new_name <- "二氢猕猴桃内酯-烟气"
+if (target_old_name %in% colnames(heatmap_matrix)) {
+  colnames(heatmap_matrix)[colnames(heatmap_matrix) == target_old_name] <- target_new_name
+}
+
+# Z-Score 标准化
 heatmap_matrix_scaled <- scale(heatmap_matrix)
 
-# 3. 准备注释 (这里把列名改为中文，图例就会显示中文)
+# 3. 准备注释
+# 【修改点 3】：不再选 Sample_ID，只选绘图需要的两列
 ann_col_df <- sample_info %>%
-  select(Sample_ID, Sourness_Class, Tobacco_Type) %>%
-  # ---【核心修改】重命名列名 ---
+  select(Sourness_Class, Tobacco_Type) %>%
   rename(`酸感等级` = Sourness_Class, `原料类型` = Tobacco_Type) %>%
   as.data.frame()
 
-rownames(ann_col_df) <- ann_col_df$Sample_ID
-ann_col_df <- ann_col_df[, -1] # 去掉ID
+# 【关键】：确保注释行数和矩阵行数一致 (防止数据行数不匹配报错)
+if (nrow(ann_col_df) != nrow(heatmap_matrix_scaled)) {
+  # 如果行数不对，尝试截取 (通常不会发生，除非数据源不对)
+  min_rows <- min(nrow(ann_col_df), nrow(heatmap_matrix_scaled))
+  ann_col_df <- ann_col_df[1:min_rows, , drop=FALSE]
+  heatmap_matrix_scaled <- heatmap_matrix_scaled[1:min_rows, ]
+}
+# 强行赋予临时行名以实现对齐 (这是 pheatmap 内部逻辑需要的，用户看不见)
+rownames(heatmap_matrix_scaled) <- paste0("S", 1:nrow(heatmap_matrix_scaled))
+rownames(ann_col_df) <- paste0("S", 1:nrow(ann_col_df))
 
-# 对齐
-common <- intersect(rownames(heatmap_matrix_scaled), rownames(ann_col_df))
-heatmap_matrix_scaled <- heatmap_matrix_scaled[common, ]
-ann_col_df <- ann_col_df[common, ]
-
-# 4. 颜色定义 (注意名字要和上面中文列名对应)
-# ==========================================================
-# 仅修改颜色定义部分
-# ==========================================================
+# 4. 颜色定义
 ann_colors <- list(
-  # 酸感等级 (保持不变)
-  `酸感等级` = c(
-    "无酸" = "#2C7BB6",   # 深蓝
-    "微酸" = "#ABDDA4",   # 浅绿
-    "稍酸" = "#FDAE61",   # 浅橙
-    "酸"   = "#D7191C",   # 红
-    "强酸" = "#800026"    # 深红
-  ),
-  
-  # 原料类型 (按您的要求修改)
-  `原料类型` = c(
-    "烤烟"   = "#33A02C", # 绿色 (保持)
-    "晒黄烟" = "#FFD700", # 金黄色 (改为黄色)
-    "晒红烟" = "#E31A1C", # 正红色 (改为红色)
-    "雪茄烟" = "#B15928", # 棕色 (指定颜色)
-    "香料烟" = "#FF7F00", # 橙色 (指定颜色)
-    "白肋烟" = "#1F78B4"  # 蓝色 (保持)
-  )
+  `酸感等级` = c("无酸"="#2C7BB6", "微酸"="#ABDDA4", "稍酸"="#FDAE61", "酸"="#D7191C", "强酸"="#800026"),
+  `原料类型` = c("烤烟"="#33A02C", "晒黄烟"="#FFD700", "晒红烟"="#E31A1C", "雪茄烟"="#B15928", "香料烟"="#FF7F00", "白肋烟"="#1F78B4")
 )
 
 # 5. 绘图
@@ -709,30 +715,23 @@ ph <- pheatmap(t(heatmap_matrix_scaled),
          annotation_col = ann_col_df, 
          annotation_colors = ann_colors,
          clustering_distance_rows = "correlation", 
-         clustering_distance_cols = "euclidean",   
+         clustering_distance_cols = "euclidean",    
          clustering_method = "complete",
          color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
          
          # 视觉设置
-         show_colnames = FALSE, # 不显示样品名
-         show_rownames = TRUE,  # 显示物质名
+         show_colnames = FALSE, # 不显示样品名 (用户本来也不想看 ID)
+         show_rownames = TRUE,  # 显示中文物质名
          fontsize_row = 8,
          border_color = NA,
-         main = NA,             # 【修改】去掉标题
          silent = TRUE
 )
 
-# 转换并保存
+# 保存
 p_gg <- as.ggplot(ph)
+ggsave("4_Cluster_Heatmap_Final_CN.svg", p_gg, width = 10, height = 12, device = svglite::svglite, fix_text_size = FALSE)
 
-# 保存SVG
-ggsave("4_Cluster_Heatmap_Final_CN.svg", p_gg, 
-       width = 10, height = 12, 
-       device = svglite::svglite, 
-       fix_text_size = FALSE)
-
-print(">>> 绘图完成！请忽略警告，查看 4_Cluster_Heatmap_Final_CN.svg")
-print(">>> 提示：图中大面积的蓝色是因为 Z-Score 标准化后，低含量样品较多，这属于正常现象。")
+cat(">>> 绘图完成！图片文件：4_Cluster_Heatmap_Final_CN.svg\n")
 ```
 
 ```{r}
