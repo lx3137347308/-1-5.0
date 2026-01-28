@@ -329,8 +329,8 @@ p_cv <- ggplot(cv_stats, aes(x = Rank, y = CV)) +
   labs(
     
     subtitle = paste0("Total ", nrow(cv_stats), " Indicators | Mean CV: ", round(mean(cv_stats$CV), 1), "%"),
-    x = "化学指标",
-    y = "变异系数 (%)"
+    x = "化学指标 (Chemical Indicators)", 
+    y = "变异系数 (Coefficient of Variation, %)"
   ) +
   theme(
     plot.title = element_text(face = "bold", size = 14),
@@ -591,6 +591,80 @@ if (nrow(plot_data) == 0) {
 }
 ```
 
+```{r}
+# ----------------------------------------------------------
+# Phase 3 Part B: 棒棒糖图 (自动绘图) - 期刊发表修正版
+# ----------------------------------------------------------
+# 1. 确保数据准备好 (沿用之前的逻辑)
+cat(">>> 开始绘制棒棒糖图 (期刊发表版)...\n")
+
+# 如果您之前没有运行过 Part A，请确保 full_table 存在
+# expert_selection <- top_15_vars # 或者使用您的自定义名单
+
+# 3. 提取绘图数据
+plot_data <- full_table %>%
+  filter(Display_Name %in% expert_selection) %>%
+  arrange(desc(abs(Rho)))
+
+if (nrow(plot_data) == 0) {
+  cat("警告：绘图数据为空！\n")
+} else {
+  # 4. 绘图 (修改了 labs, scale_color_manual 和 theme)
+  font_family <- "SimSun" 
+  
+  p <- ggplot(plot_data, aes(x = reorder(Display_Name, Rho), y = Rho)) +
+    # 画棒棒糖的棍子
+    geom_segment(aes(xend = reorder(Display_Name, Rho), y = 0, yend = Rho, color = Type), 
+                 linewidth = 1.2) + 
+    # 画棒棒糖的糖（点）
+    geom_point(aes(color = Type, size = abs(Rho)), alpha = 0.9) +
+    # 标星号
+    geom_text(aes(label = Stars, y = Rho), 
+              nudge_y = ifelse(plot_data$Rho > 0, 0.08, -0.08),
+              vjust = 0.75, size = 6, fontface = "bold", family = font_family) +
+    
+    # --- 【修改 1】：图例标签加英文 ---
+    scale_color_manual(
+      # 指定颜色映射
+      values = c("Positive (Promoting)" = "#E41A1C", 
+                 "Negative (Suppressing)" = "#377EB8"),
+      # 显式指定顺序，防止错乱
+      breaks = c("Positive (Promoting)", "Negative (Suppressing)"),
+      # 对应的中英文标签
+      labels = c("正向关联 (Positive)", "负向关联 (Negative)")
+    ) +
+    
+    coord_flip() + # 翻转坐标轴
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", linewidth = 0.8) +
+    
+    # --- 【修改 2】：坐标轴和图例标题加英文 ---
+    labs(
+         x = "", # 纵坐标（物质名）不需要标题
+         # 因为翻转了，y 这里其实是横坐标
+         y = "Spearman 相关系数 (Correlation Coefficient, Rho)",
+         color = "关联类型 (Association Type)", 
+         size = "关联强度 (Strength)") +
+    
+    theme_bw(base_size = 14) + 
+    
+    # --- 【修改 3】：图例位置移到右侧 ---
+    theme(
+      text = element_text(family = font_family),
+      plot.title = element_text(face = "bold", size = 18, hjust = 0.5, family = font_family),
+      legend.position = "right" # 改为右侧
+    )
+  
+  # 5. 保存
+  ggsave("3_Expert_Correlation_Lollipop_Final_English.svg", p, 
+         width = 10, height = 7, dpi = 300, #稍微加宽一点以容纳右侧图例
+         device = svglite::svglite, 
+         fix_text_size = FALSE)
+  
+  cat(">>> 图片已生成：3_Expert_Correlation_Lollipop_Final_English.svg\n")
+  print(p)
+}
+```
+
 你在看这张图的时候，可能会发现一个**非常有趣且反常识**的现象，这正是你论文的亮点：
 
 1.  **糖类（总糖、蔗糖、葡萄糖）是正相关（Rho \> 0）**：
@@ -735,6 +809,128 @@ cat(">>> 绘图完成！图片文件：4_Cluster_Heatmap_Final_CN.svg\n")
 ```
 
 ```{r}
+# ==========================================================
+# Phase 4: 聚类热图 (稳健修复版·ID强校验·结果锁定)
+# ==========================================================
+library(pheatmap)
+library(dplyr)
+library(readr)
+library(RColorBrewer)
+library(svglite)
+library(ggplotify)
+library(ggplot2)
+
+# 0. 锁定随机数种子 (保证每次跑出来的图一模一样)
+set.seed(123)
+
+# 1. 环境与数据检查
+if (!exists("analysis_data")) stop("数据未加载，请先运行 Phase 1")
+if (!file.exists("sample_info.csv")) stop("找不到 sample_info.csv")
+
+# --- 读取样品信息并重新计算等级 ---
+sample_info <- read_csv("sample_info.csv", show_col_types = FALSE) %>%
+  mutate(
+    Sourness_Class = case_when(
+      Sourness_Score == 0 ~ "无酸",
+      Sourness_Score > 0 & Sourness_Score <= 1.5 ~ "微酸",
+      Sourness_Score > 1.5 & Sourness_Score <= 3.0 ~ "稍酸",
+      Sourness_Score > 3.0 & Sourness_Score <= 4.5 ~ "酸",
+      Sourness_Score > 4.5 ~ "强酸"
+    )
+  ) %>%
+  arrange(Sample_ID) # 【关键】强制按ID排序，防止乱序
+
+# --- 读取双语映射表 ---
+map_file <- "2_Diff_Analysis_Sig_Candidates_Bilingual.csv"
+if (!file.exists(map_file)) stop(paste("找不到文件:", map_file))
+raw_map <- read_csv(map_file, show_col_types = FALSE)
+if ("变量代码 (Variable Code)" %in% colnames(raw_map)) {
+  name_map <- raw_map %>% select(Computational_Name = `变量代码 (Variable Code)`, Display_Name = `化学成分 (Chemical Component)`)
+} else {
+  name_map <- raw_map %>% select(Computational_Name, Display_Name)
+}
+
+# --- 读取相关性结果 ---
+cor_file <- "3_Phase3_Correlation_All_Significant.csv"
+if (!file.exists(cor_file)) stop(paste("找不到文件:", cor_file))
+cor_table <- read_csv(cor_file, show_col_types = FALSE)
+sig_vars <- cor_table %>% filter(P_Value < 0.05) %>% pull(Computational_Name)
+
+# 2. 准备矩阵 (ID强校验)
+# 确保只选出数据中存在的列
+valid_vars <- intersect(sig_vars, colnames(analysis_data))
+
+# 提取数据并按 ID 排序
+heatmap_matrix <- analysis_data %>% 
+  select(Sample_ID, all_of(valid_vars)) %>% 
+  arrange(Sample_ID) %>% # 【关键】强制排序
+  as.data.frame()
+
+# 将 Sample_ID 设为行名 (这是对齐的唯一锚点)
+rownames(heatmap_matrix) <- heatmap_matrix$Sample_ID
+heatmap_matrix <- heatmap_matrix[, -1]
+
+# --- 中文名替换 ---
+current_names <- colnames(heatmap_matrix)
+new_names <- name_map$Display_Name[match(current_names, name_map$Computational_Name)]
+colnames(heatmap_matrix) <- ifelse(is.na(new_names), current_names, new_names)
+
+# --- 特殊改名 ---
+target_old_name <- "二氢猕猴桃内酯2"
+target_new_name <- "二氢猕猴桃内酯-烟气"
+if (target_old_name %in% colnames(heatmap_matrix)) {
+  colnames(heatmap_matrix)[colnames(heatmap_matrix) == target_old_name] <- target_new_name
+}
+
+# Z-Score 标准化
+heatmap_matrix_scaled <- scale(heatmap_matrix)
+
+# 3. 准备注释 (ID强校验)
+ann_col_df <- sample_info %>%
+  select(Sample_ID, Sourness_Class, Tobacco_Type) %>%
+  rename(`酸感等级` = Sourness_Class, `原料类型` = Tobacco_Type) %>%
+  as.data.frame()
+
+# 将 Sample_ID 设为行名
+rownames(ann_col_df) <- ann_col_df$Sample_ID
+ann_col_df <- ann_col_df[, -1] # 去掉ID列
+
+# 【终极校验】：确保矩阵和注释的行名完全一致
+common_samples <- intersect(rownames(heatmap_matrix_scaled), rownames(ann_col_df))
+heatmap_matrix_scaled <- heatmap_matrix_scaled[common_samples, ]
+ann_col_df <- ann_col_df[common_samples, , drop = FALSE]
+
+# 4. 颜色定义
+ann_colors <- list(
+  `酸感等级` = c("无酸"="#2C7BB6", "微酸"="#ABDDA4", "稍酸"="#FDAE61", "酸"="#D7191C", "强酸"="#800026"),
+  `原料类型` = c("烤烟"="#33A02C", "晒黄烟"="#FFD700", "晒红烟"="#E31A1C", "雪茄烟"="#B15928", "香料烟"="#FF7F00", "白肋烟"="#1F78B4")
+)
+
+# 5. 绘图
+ph <- pheatmap(t(heatmap_matrix_scaled), 
+         annotation_col = ann_col_df, 
+         annotation_colors = ann_colors,
+         clustering_distance_rows = "correlation", 
+         clustering_distance_cols = "euclidean",    
+         clustering_method = "complete",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
+         
+         # 视觉设置
+         show_colnames = FALSE, # 不显示样品名
+         show_rownames = TRUE,  # 显示中文物质名
+         fontsize_row = 8,
+         border_color = NA,
+         silent = TRUE
+)
+
+# 保存
+p_gg <- as.ggplot(ph)
+ggsave("4_Cluster_Heatmap_Final_Fixed.svg", p_gg, width = 10, height = 12, device = svglite::svglite, fix_text_size = FALSE)
+
+cat(">>> 绘图完成！图片文件：4_Cluster_Heatmap_Final_Fixed.svg\n")
+```
+
+```{r}
 # ----------------------------------------------------------
 # 补充步骤：同时保存为高清 PNG 格式 (方便预览和插入PPT)
 # ----------------------------------------------------------
@@ -791,11 +987,9 @@ cat("\n==============================\n")
 
 **酸感（Sourness Perception）是食品与烟草感官品质的重要维度。在现代感官科学（Sensory Science）视野下，酸感不再局限于单一的味觉维度，而是被定义为由氢离子刺激味蕾产生的基础味觉（Taste）与挥发性有机酸刺激嗅觉受体产生的酸香（Aroma）所构成的味觉-嗅觉跨模态综合感知（Multisensory Flavor Perception）** **\[1-2\]**。其强度与特性不仅取决于酸性物质的总量，更依赖于特定呈酸组分（如乙酸、乳酸等）的比例平衡及与其他风味物质的协同作用。
 
-**\[1\] 对应文献 A (Cell 综述):**
-Spence C. Multisensory flavor perception\[J\]. **Cell**, 2015, 161(1): 24-35.
+**\[1\] 对应文献 A (Cell 综述):** Spence C. Multisensory flavor perception\[J\]. **Cell**, 2015, 161(1): 24-35.
 
-**\[2\] 对应文献 B (有机酸研究):**
-Zampini M, Wantling E, Phillips N, et al. Multisensory flavor perception: Assessing the influence of fruit acids and color cues on the perception of fruit-flavored beverages\[J\]. **Food Quality and Preference**, 2008, 19(3): 335-343.
+**\[2\] 对应文献 B (有机酸研究):** Zampini M, Wantling E, Phillips N, et al. Multisensory flavor perception: Assessing the influence of fruit acids and color cues on the perception of fruit-flavored beverages\[J\]. **Food Quality and Preference**, 2008, 19(3): 335-343.
 
 在食品科学领域，关于酸感形成的物质基础研究已较为成熟。\*\*徐伟等（《发酵时间对俄式面包面团有机酸形成及其酸感的影响》）\*\*在俄式面包发酵研究中指出，乳酸与乙酸的特定比例（约 5.5:1）是形成柔和酸感的关键，单一酸含量的过高或过低均会导致感官失衡；\*\*刘春凤等（《小麦麦芽制麦过程中酸感物质的变化》）\*\*发现小麦麦芽制麦过程中，乙酸、乳酸、柠檬酸等有机酸的动态积累直接决定了最终产品的酸感强度；\*\*马艺荧等（《东北酸菜不同发酵时间有机酸变化及其对产品酸感的影响》）\*\*则进一步证实，东北酸菜发酵中乳酸与其他有机酸构建的缓冲体系是赋予产品“酸而不尖”特征的核心机制。这些研究表明，有机酸的种类丰度、浓度阈值及组分间的协同拮抗效应是调控感官酸感的决定性因素。
 
@@ -811,16 +1005,12 @@ Zampini M, Wantling E, Phillips N, et al. Multisensory flavor perception: Assess
 
 ### **摘要**
 
-**【背景和目的】**
-酸感（Sourness）是加热卷烟区别于传统燃吸卷烟的特征性感官属性，其形成受低温热解环境与原料特性的双重影响，但目前关于其确切的化学物质基础及“原料-化学-感官”的关联机制尚不明确。本研究旨在通过构建酸感量化评价体系，系统探究不同类型烟叶原料的酸感差异，并溯源决定该感官风格的关键化学组分。
+**【背景和目的】** 酸感（Sourness）是加热卷烟区别于传统燃吸卷烟的特征性感官属性，其形成受低温热解环境与原料特性的双重影响，但目前关于其确切的化学物质基础及“原料-化学-感官”的关联机制尚不明确。本研究旨在通过构建酸感量化评价体系，系统探究不同类型烟叶原料的酸感差异，并溯源决定该感官风格的关键化学组分。
 
-**【方法】**
-本研究选取57份具有代表性的不同类型（烤烟、白肋烟、香料烟、晒红烟、晒黄烟等）加热卷烟原料，首先建立0\~5分制的酸感定量评价标准进行感官表征。随后，检测样品中98种常规化学成分及致香组分。采用描述性统计分析评估感官数据的离散特征；利用非参数Kruskal-Wallis H检验对不同酸感组别的化学成分进行差异性筛选；结合Benjamini-Hochberg校正（FDR）与斯皮尔曼（Spearman）秩相关系数，判定核心差异物质的贡献方向与强度；最后，通过双向层次聚类分析（HCA）验证关键化学指标对原料类型及感官风格的区分效能。
+**【方法】** 本研究选取57份具有代表性的不同类型（烤烟、白肋烟、香料烟、晒红烟、晒黄烟等）加热卷烟原料，首先建立0\~5分制的酸感定量评价标准进行感官表征。随后，检测样品中98种常规化学成分及致香组分。采用描述性统计分析评估感官数据的离散特征；利用非参数Kruskal-Wallis H检验对不同酸感组别的化学成分进行差异性筛选；结合Benjamini-Hochberg校正（FDR）与斯皮尔曼（Spearman）秩相关系数，判定核心差异物质的贡献方向与强度；最后，通过双向层次聚类分析（HCA）验证关键化学指标对原料类型及感官风格的区分效能。
 
-**【结果】**
-研究发现，加热卷烟的酸感表现出极强的原料依赖性，变异系数高达103.54%，其中烤烟及晒黄烟呈现显著的“高酸”特征，而白肋烟及晒红烟呈现“低酸/无酸”特征。通过差异分析与相关性筛选，共锁定49种关键化学标志物。其中，**正向贡献指标**主要包括绿原酸、芸香苷等多酚类，葡萄糖、蔗糖等糖类，以及乙酸、DDMP等热解产物，其在烤烟型原料中高丰度富集，反映了“高糖/高多酚”代谢背景下的热解产酸潜力；**负向抑制指标**主要包括烟碱、总氮、异戊酰胺及草酸等，其在白肋烟等原料中富集，揭示了生物碱对有机酸的化学中和效应及感官掩蔽机制。聚类热图清晰地将样品划分为“高糖产酸型”与“高碱抑酸型”两大类群，与感官评价结果高度一致。
+**【结果】** 研究发现，加热卷烟的酸感表现出极强的原料依赖性，变异系数高达103.54%，其中烤烟及晒黄烟呈现显著的“高酸”特征，而白肋烟及晒红烟呈现“低酸/无酸”特征。通过差异分析与相关性筛选，共锁定49种关键化学标志物。其中，**正向贡献指标**主要包括绿原酸、芸香苷等多酚类，葡萄糖、蔗糖等糖类，以及乙酸、DDMP等热解产物，其在烤烟型原料中高丰度富集，反映了“高糖/高多酚”代谢背景下的热解产酸潜力；**负向抑制指标**主要包括烟碱、总氮、异戊酰胺及草酸等，其在白肋烟等原料中富集，揭示了生物碱对有机酸的化学中和效应及感官掩蔽机制。聚类热图清晰地将样品划分为“高糖产酸型”与“高碱抑酸型”两大类群，与感官评价结果高度一致。
 
-**【结论】**
-本研究证实了原料的碳氮代谢差异是决定加热卷烟酸感风格的先天基础，明确了“糖类热解产酸”与“生物碱中和抑酸”是调控酸感表达的双重核心机制。研究构建的基于糖碱比、特征多酚及关键有机酸的化学指纹图谱，填补了加热卷烟酸感评价的空白，为专用原料的定向筛选、配方设计及感官品质调控提供了科学依据和量化指标。
+**【结论】** 本研究证实了原料的碳氮代谢差异是决定加热卷烟酸感风格的先天基础，明确了“糖类热解产酸”与“生物碱中和抑酸”是调控酸感表达的双重核心机制。研究构建的基于糖碱比、特征多酚及关键有机酸的化学指纹图谱，填补了加热卷烟酸感评价的空白，为专用原料的定向筛选、配方设计及感官品质调控提供了科学依据和量化指标。
 
 ### **关键词：**加热卷烟；酸感；物质基础；原料差异；Kruskal-Wallis检验；聚类分析
